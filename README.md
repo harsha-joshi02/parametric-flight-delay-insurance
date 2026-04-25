@@ -2,160 +2,106 @@
 
 A blockchain-based insurance system where a smart contract automatically pays out ETH when your flight is delayed — no claims, no adjusters.
 
-**Stack:** Solidity · Hardhat · ethers.js · React · Vite
+**Stack:** Solidity · Hardhat · ethers.js · React · Vite  
+**Network:** Ethereum Sepolia Testnet  
+**Contract:** `0x37002c178e6B35dc4CfEc9dC6147EB6915033838`
 
 ---
 
 ## How it works
 
 1. A user pays **0.001 ETH** to buy a policy for a specific flight.
-2. After the flight, an **oracle script** checks the actual delay from a flight API.
-3. If the delay is **≥ 60 minutes**, the smart contract instantly sends **0.003 ETH** to the user's wallet.
-4. No human intervention. The code enforces the rules.
-
-```
-User (MetaMask)  →  buyPolicy()  →  Smart Contract
-                                         ↑
-Oracle Script    →  reportDelay()  ──────┘
-(reads flight API)
-```
+2. After the flight, an oracle script reports the delay to the contract.
+3. If the delay is **≥ 60 minutes**, the contract instantly sends **0.003 ETH** to the user's wallet — automatically.
 
 ---
 
 ## Project Structure
 
 ```
-blockchain project/
-├── contracts/
-│   └── FlightInsurance.sol   ← the smart contract
-├── scripts/
-│   ├── deploy.js             ← deploys the contract
-│   └── oracle.js             ← reads flight data, calls reportDelay()
-├── test/
-│   └── FlightInsurance.test.js
-├── frontend/
-│   └── src/
-│       ├── App.jsx           ← main UI
-│       └── contract.js       ← contract address + ABI
-├── hardhat.config.js
-└── .env.example
+├── contracts/FlightInsurance.sol   ← smart contract
+├── scripts/deploy.js               ← deploys the contract
+├── scripts/oracle.js               ← reports flight delay on-chain
+├── test/FlightInsurance.test.js    ← unit tests
+└── frontend/                       ← React UI
 ```
 
 ---
 
-## Step 1 — Install
+## Setup
 
 ```bash
-# Root project (contract + oracle)
+# 1. Clone and install
+git clone <repo-url>
+cd flight-delay-insurance
 npm install
+cd frontend && npm install && cd ..
 
-# Frontend
-cd frontend
-npm install
-```
-
----
-
-## Step 2 — Run Tests (no setup needed)
-
-```bash
-npm test
-```
-
-You should see **6 passing** tests covering the full policy lifecycle.
-
----
-
-## Step 3 — Set Up Environment
-
-```bash
+# 2. Create your .env
 cp .env.example .env
 ```
 
-Edit `.env` with your values:
+Fill in `.env`:
+- `RPC_URL` — create a free app at alchemy.com, select Ethereum Sepolia, copy the URL
+- `PRIVATE_KEY` — MetaMask → click account → 3 dots → Account Details → Show private key → add `0x` at the front
+- `CONTRACT_ADDRESS` — already deployed: `0x37002c178e6B35dc4CfEc9dC6147EB6915033838`
 
-```
-RPC_URL=https://eth-sepolia.g.alchemy.com/v2/YOUR_KEY   # from alchemy.com (free)
-PRIVATE_KEY=your_metamask_private_key                    # MetaMask → Account Details → Export Key
-ORACLE_ADDRESS=                                          # same as your wallet address for this demo
-AVIATIONSTACK_KEY=                                       # optional, from aviationstack.com (free tier)
-```
+Also paste the contract address in `frontend/src/contract.js`.
 
-> **How to get Sepolia test ETH:** Go to `sepoliafaucet.com` and paste your wallet address.
+> **Need Sepolia test ETH?** Search "Google Cloud Sepolia Faucet" on Google and paste your wallet address — free.
 
 ---
 
-## Step 4 — Deploy to Sepolia
+## Run Tests
 
 ```bash
-npm run deploy:sepolia
+npm test
+# 6 passing
 ```
-
-Copy the printed `CONTRACT_ADDRESS` into:
-- `.env` → `CONTRACT_ADDRESS=0x...`
-- `frontend/src/contract.js` → `CONTRACT_ADDRESS = "0x..."`
 
 ---
 
-## Step 5 — Run the Frontend
+## Run the Frontend
 
 ```bash
-cd frontend
-npm run dev
+cd frontend && npm run dev
 ```
 
-Open `http://localhost:5173` in your browser.
-
-1. Click **Connect MetaMask** (make sure MetaMask is on Sepolia network)
-2. Enter a flight number (e.g. `AA123`) and a future travel date
-3. Click **Buy Policy** and confirm the 0.001 ETH transaction
+Open `http://localhost:5173`, connect MetaMask (on Sepolia), enter a flight number (e.g. `AA123`) and a future date, and buy a policy.
 
 ---
 
-## Step 6 — Run the Oracle
+## Simulate a Payout (Oracle)
 
-After your flight date, run:
+> Only the person who deployed the contract can run this.
 
 ```bash
-# Simulate a DELAYED flight (triggers payout):
-node scripts/oracle.js 0 DELAYED
+# Delayed flight → triggers payout
+node scripts/oracle.js <policyId> DELAYED
 
-# Simulate an ON-TIME flight (no payout):
-node scripts/oracle.js 0 ONTIME
-
-# Real flight (needs AVIATIONSTACK_KEY in .env):
-node scripts/oracle.js 0 AA123 2025-05-01
+# On-time flight → no payout
+node scripts/oracle.js <policyId> ONTIME
 ```
 
-The script reports the delay to the contract. If delay ≥ 60 min, the contract sends 0.003 ETH to the policyholder automatically.
+Replace `<policyId>` with the policy number shown on the frontend. If delayed, 0.003 ETH lands in the policyholder's wallet automatically.
 
 ---
 
 ## Contract Summary
 
-| Function | Who calls it | What it does |
+| Function | Who | What |
 |---|---|---|
-| `buyPolicy(flightId, date)` | User (+ 0.001 ETH) | Creates a new policy |
-| `reportDelay(policyId, minutes)` | Oracle only | Triggers payout if delay ≥ 60 min |
-| `expirePolicy(policyId)` | Anyone | Marks policy expired after 2 days past travel |
-| `fund()` | Owner (+ ETH) | Deposits ETH so contract can pay out |
+| `buyPolicy(flightId, date)` | User + 0.001 ETH | Creates a policy |
+| `reportDelay(policyId, minutes)` | Oracle only | Pays out if delay ≥ 60 min |
+| `expirePolicy(policyId)` | Anyone | Expires policy after 2 days past travel |
 
-**Policy states:** Active → Triggered → Paid (or) Active → Expired
-
----
-
-## Security Notes (as required by the proposal)
-
-1. **Oracle access control** — only the address set as `oracle` at deploy time can call `reportDelay()`. Anyone else gets "Not oracle".
-2. **Reentrancy** — `transfer()` is used instead of `call()` to cap gas and prevent reentrancy attacks.
-3. **Integer overflow** — Solidity 0.8+ has built-in overflow checks.
-4. **Underfunding** — the contract checks its own balance before paying out and reverts if insufficient.
+**Policy states:** Active → Paid (or) Active → Expired
 
 ---
 
 ## Known Limitations
 
-- The oracle is a single trusted address (centralized). Production would use Chainlink.
-- Policy data (flight, wallet, date) is public on-chain — privacy trade-off acknowledged.
-- Premiums are fixed tiers, not actuarially priced.
-- Sepolia testnet only — no real money.
+- Oracle is a single trusted address — production would use Chainlink.
+- All policy data is public on-chain (no privacy).
+- Fixed premium/payout — no dynamic pricing.
+- Sepolia testnet only, no real money involved.
