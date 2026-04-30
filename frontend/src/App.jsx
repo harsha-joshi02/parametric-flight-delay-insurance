@@ -1,8 +1,13 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { ethers } from "ethers";
 import { CONTRACT_ADDRESS, ABI } from "./contract.js";
 
 const STATUS_LABELS = ["Active", "Triggered", "Paid", "Expired"];
+
+function truncate(addr) {
+  if (!addr) return "";
+  return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
+}
 
 function App() {
   const [account, setAccount]       = useState(null);
@@ -13,19 +18,25 @@ function App() {
   const [travelDate, setTravelDate] = useState("");
   const [msg, setMsg]               = useState("");
   const [loading, setLoading]       = useState(false);
+  const [stats, setStats]           = useState({ balance: "—", totalPolicies: "—" });
+  const [eventLog, setEventLog]     = useState([]);
+  const [eventsLoading, setEventsLoading] = useState(false);
 
-  // Connect MetaMask
   async function connect() {
     if (!window.ethereum) { alert("Install MetaMask first!"); return; }
-    const provider = new ethers.BrowserProvider(window.ethereum);
-    await provider.send("eth_requestAccounts", []);
-    const signer   = await provider.getSigner();
-    const addr     = await signer.getAddress();
-    const c        = new ethers.Contract(CONTRACT_ADDRESS, ABI, signer);
+    const prov   = new ethers.BrowserProvider(window.ethereum);
+    await prov.send("eth_requestAccounts", []);
+    const signer = await prov.getSigner();
+    const addr   = await signer.getAddress();
+    const c      = new ethers.Contract(CONTRACT_ADDRESS, ABI, signer);
     setAccount(addr);
     setContract(c);
-    await refreshBalance(c);
-    await loadMyPolicies(c, addr);
+    await Promise.all([
+      refreshBalance(c),
+      loadMyPolicies(c, addr),
+      loadStats(prov),
+      loadEventLog(prov, c),
+    ]);
   }
 
   async function refreshBalance(c) {
@@ -35,7 +46,73 @@ function App() {
     } catch { setBalance("—"); }
   }
 
-  // Load all policies belonging to connected wallet
+  async function loadStats(prov) {
+    try {
+      const ro    = new ethers.Contract(CONTRACT_ADDRESS, ABI, prov);
+      const [bal, total] = await Promise.all([
+        prov.getBalance(CONTRACT_ADDRESS),
+        ro.nextPolicyId(),
+      ]);
+      setStats({
+        balance: ethers.formatEther(bal) + " ETH",
+        totalPolicies: total.toString(),
+      });
+    } catch (e) { console.error("loadStats", e); }
+  }
+
+  async function loadEventLog(prov, c) {
+    setEventsLoading(true);
+    try {
+      const ro = new ethers.Contract(CONTRACT_ADDRESS, ABI, prov);
+      const [createdLogs, paidLogs] = await Promise.all([
+        ro.queryFilter(ro.filters.PolicyCreated()),
+        ro.queryFilter(ro.filters.PolicyPaid()),
+      ]);
+
+      // Enrich created events with travel date from contract storage
+      const createdItems = await Promise.all(
+        createdLogs.map(async e => {
+          let travelDateTs = null;
+          try {
+            const p = await c.getPolicy(e.args.policyId);
+            travelDateTs = Number(p.travelDate);
+          } catch {}
+          return {
+            type: "purchased",
+            blockNumber: e.blockNumber,
+            policyId: e.args.policyId.toString(),
+            flightId: e.args.flightId,
+            holder: e.args.holder,
+            travelDate: travelDateTs,
+          };
+        })
+      );
+
+      const paidItems = paidLogs.map(e => ({
+        type: "payout",
+        blockNumber: e.blockNumber,
+        policyId: e.args.policyId.toString(),
+        holder: e.args.holder,
+        amount: ethers.formatEther(e.args.amount),
+      }));
+
+      const all = [...createdItems, ...paidItems].sort((a, b) => b.blockNumber - a.blockNumber);
+      setEventLog(all);
+    } catch (e) { console.error("loadEventLog", e); }
+    setEventsLoading(false);
+  }
+
+  async function handleRefresh() {
+    if (!contract) return;
+    const prov = new ethers.BrowserProvider(window.ethereum);
+    await Promise.all([
+      refreshBalance(contract),
+      loadMyPolicies(contract, account),
+      loadStats(prov),
+      loadEventLog(prov, contract),
+    ]);
+  }
+
   async function loadMyPolicies(c, addr) {
     try {
       const total = await c.nextPolicyId();
@@ -50,7 +127,6 @@ function App() {
     } catch (e) { console.error(e); }
   }
 
-  // Buy a new policy
   async function buyPolicy() {
     if (!contract) { setMsg("Connect wallet first."); return; }
     if (!flightId || !travelDate) { setMsg("Fill in flight ID and travel date."); return; }
@@ -70,8 +146,7 @@ function App() {
       setMsg(`Policy bought! Tx: ${tx.hash.slice(0, 18)}...`);
       setFlightId("");
       setTravelDate("");
-      await loadMyPolicies(contract, account);
-      await refreshBalance(contract);
+      await handleRefresh();
     } catch (e) {
       setMsg("Error: " + (e.reason || e.message));
     }
@@ -85,6 +160,22 @@ function App() {
         Pay 0.001 ETH — get 0.003 ETH back if your flight is delayed 60+ minutes.
         <br />Powered by a Solidity smart contract on Ethereum Sepolia.
       </p>
+
+      {/* Stats bar */}
+      {account && (
+        <div className="stats-bar">
+          <div className="stat-item">
+            <span className="stat-label">Contract Balance</span>
+            <span className="stat-value">{stats.balance}</span>
+          </div>
+          <div className="stat-divider" />
+          <div className="stat-item">
+            <span className="stat-label">Total Policies</span>
+            <span className="stat-value">{stats.totalPolicies}</span>
+          </div>
+          <button className="refresh-btn" onClick={handleRefresh}>↻ Refresh</button>
+        </div>
+      )}
 
       {/* Wallet section */}
       <div className="card">
@@ -154,6 +245,50 @@ function App() {
               onClick={() => loadMyPolicies(contract, account)}>
               Refresh
             </button>
+          )}
+        </div>
+      )}
+
+      {/* Event Log */}
+      {account && (
+        <div className="card">
+          <h2>Event Log</h2>
+          {eventsLoading ? (
+            <div className="muted">Loading events…</div>
+          ) : eventLog.length === 0 ? (
+            <div className="muted">No on-chain events found.</div>
+          ) : (
+            <div className="event-log">
+              {eventLog.map((ev, i) => (
+                <div className="event-row" key={i}>
+                  {ev.type === "purchased" ? (
+                    <>
+                      <span className="event-badge event-badge-blue">Purchased</span>
+                      <div className="event-details">
+                        <span>Policy <strong>#{ev.policyId}</strong> — {ev.flightId}</span>
+                        {ev.travelDate && (
+                          <span className="muted">
+                            Travel: {new Date(ev.travelDate * 1000).toLocaleDateString()}
+                          </span>
+                        )}
+                        <span className="muted address">{truncate(ev.holder)}</span>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <span className="event-badge event-badge-green">Payout</span>
+                      <div className="event-details">
+                        <span>Policy <strong>#{ev.policyId}</strong> — {ev.amount} ETH</span>
+                        <span className="muted">
+                          → <span className="address">{truncate(ev.holder)}</span>
+                        </span>
+                      </div>
+                    </>
+                  )}
+                  <span className="event-block muted">blk {ev.blockNumber}</span>
+                </div>
+              ))}
+            </div>
           )}
         </div>
       )}
