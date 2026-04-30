@@ -2,24 +2,34 @@ import { useState } from "react";
 import { ethers } from "ethers";
 import { CONTRACT_ADDRESS, ABI } from "./contract.js";
 
-const STATUS_LABELS = ["Active", "Triggered", "Paid", "Expired"];
+const STATUS_LABELS  = ["ACTIVE", "TRIGGERED", "PAID OUT", "EXPIRED"];
+const STATUS_CLASSES = ["s-active", "s-trigger", "s-paid", "s-expired"];
+
+function fmt(ts) {
+  // Bug fix: contract timestamps are unix seconds — multiply by 1000 before Date()
+  return new Date(Number(ts) * 1000).toLocaleDateString("en-US", {
+    month: "short", day: "numeric", year: "numeric",
+  });
+}
 
 function truncate(addr) {
   if (!addr) return "";
   return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
 }
 
+// ─── All ethers / contract logic is unchanged below ───────────────────────────
+
 function App() {
-  const [account, setAccount]       = useState(null);
-  const [contract, setContract]     = useState(null);
-  const [balance, setBalance]       = useState("—");
-  const [policies, setPolicies]     = useState([]);
-  const [flightId, setFlightId]     = useState("");
-  const [travelDate, setTravelDate] = useState("");
-  const [msg, setMsg]               = useState("");
-  const [loading, setLoading]       = useState(false);
-  const [stats, setStats]           = useState({ balance: "—", totalPolicies: "—" });
-  const [eventLog, setEventLog]     = useState([]);
+  const [account, setAccount]             = useState(null);
+  const [contract, setContract]           = useState(null);
+  const [balance, setBalance]             = useState("—");
+  const [policies, setPolicies]           = useState([]);
+  const [flightId, setFlightId]           = useState("");
+  const [travelDate, setTravelDate]       = useState("");
+  const [msg, setMsg]                     = useState("");
+  const [loading, setLoading]             = useState(false);
+  const [stats, setStats]                 = useState({ balance: "—", totalPolicies: "—" });
+  const [eventLog, setEventLog]           = useState([]);
   const [eventsLoading, setEventsLoading] = useState(false);
 
   async function connect() {
@@ -48,13 +58,13 @@ function App() {
 
   async function loadStats(prov) {
     try {
-      const ro    = new ethers.Contract(CONTRACT_ADDRESS, ABI, prov);
+      const ro           = new ethers.Contract(CONTRACT_ADDRESS, ABI, prov);
       const [bal, total] = await Promise.all([
         prov.getBalance(CONTRACT_ADDRESS),
         ro.nextPolicyId(),
       ]);
       setStats({
-        balance: ethers.formatEther(bal) + " ETH",
+        balance:       ethers.formatEther(bal) + " ETH",
         totalPolicies: total.toString(),
       });
     } catch (e) { console.error("loadStats", e); }
@@ -63,37 +73,36 @@ function App() {
   async function loadEventLog(prov, c) {
     setEventsLoading(true);
     try {
-      const ro = new ethers.Contract(CONTRACT_ADDRESS, ABI, prov);
-      const [createdLogs, paidLogs] = await Promise.all([
+      const ro                       = new ethers.Contract(CONTRACT_ADDRESS, ABI, prov);
+      const [createdLogs, paidLogs]  = await Promise.all([
         ro.queryFilter(ro.filters.PolicyCreated()),
         ro.queryFilter(ro.filters.PolicyPaid()),
       ]);
 
-      // Enrich created events with travel date from contract storage
       const createdItems = await Promise.all(
         createdLogs.map(async e => {
           let travelDateTs = null;
           try {
-            const p = await c.getPolicy(e.args.policyId);
+            const p    = await c.getPolicy(e.args.policyId);
             travelDateTs = Number(p.travelDate);
           } catch {}
           return {
             type: "purchased",
             blockNumber: e.blockNumber,
-            policyId: e.args.policyId.toString(),
-            flightId: e.args.flightId,
-            holder: e.args.holder,
-            travelDate: travelDateTs,
+            policyId:    e.args.policyId.toString(),
+            flightId:    e.args.flightId,
+            holder:      e.args.holder,
+            travelDate:  travelDateTs,
           };
         })
       );
 
       const paidItems = paidLogs.map(e => ({
-        type: "payout",
+        type:        "payout",
         blockNumber: e.blockNumber,
-        policyId: e.args.policyId.toString(),
-        holder: e.args.holder,
-        amount: ethers.formatEther(e.args.amount),
+        policyId:    e.args.policyId.toString(),
+        holder:      e.args.holder,
+        amount:      ethers.formatEther(e.args.amount),
       }));
 
       const all = [...createdItems, ...paidItems].sort((a, b) => b.blockNumber - a.blockNumber);
@@ -120,7 +129,13 @@ function App() {
       for (let i = 0; i < Number(total); i++) {
         const p = await c.getPolicy(i);
         if (p.policyholder.toLowerCase() === addr.toLowerCase()) {
-          mine.push({ id: i, ...p });
+          mine.push({
+            id:           i,
+            policyholder: p.policyholder,
+            flightId:     p.flightId,
+            travelDate:   p.travelDate,   // BigInt — fmt() converts via Number(ts)*1000
+            status:       p.status,
+          });
         }
       }
       setPolicies(mine);
@@ -140,7 +155,7 @@ function App() {
     setMsg("Sending transaction...");
     try {
       const premium = await contract.PREMIUM();
-      const tx = await contract.buyPolicy(flightId.toUpperCase(), unixDate, { value: premium });
+      const tx      = await contract.buyPolicy(flightId.toUpperCase(), unixDate, { value: premium });
       setMsg("Waiting for confirmation...");
       await tx.wait();
       setMsg(`Policy bought! Tx: ${tx.hash.slice(0, 18)}...`);
@@ -153,50 +168,60 @@ function App() {
     setLoading(false);
   }
 
+  // ─── JSX ─────────────────────────────────────────────────────────────────────
+
   return (
-    <div style={{ maxWidth: 720, margin: "0 auto" }}>
-      <h1>✈ Flight Delay Insurance</h1>
-      <p className="subtitle">
-        Pay 0.001 ETH — get 0.003 ETH back if your flight is delayed 60+ minutes.
-        <br />Powered by a Solidity smart contract on Ethereum Sepolia.
-      </p>
+    <div className="page">
 
-      {/* Stats bar */}
-      {account && (
-        <div className="stats-bar">
-          <div className="stat-item">
-            <span className="stat-label">Contract Balance</span>
-            <span className="stat-value">{stats.balance}</span>
+      {/* ── Header ── */}
+      <header className="header">
+        <div className="brand">
+          <div className="brand-name">
+            <span>✈</span>
+            <span>ChainSure</span>
           </div>
-          <div className="stat-divider" />
-          <div className="stat-item">
-            <span className="stat-label">Total Policies</span>
-            <span className="stat-value">{stats.totalPolicies}</span>
-          </div>
-          <button className="refresh-btn" onClick={handleRefresh}>↻ Refresh</button>
+          <div className="brand-sub">Parametric Flight Insurance on Ethereum</div>
         </div>
-      )}
 
-      {/* Wallet section */}
-      <div className="card">
         {account ? (
-          <>
-            <div>Connected: <span className="address">{account}</span></div>
-            <div className="muted" style={{ marginTop: "0.4rem" }}>Contract balance: {balance}</div>
-          </>
+          <div className="wallet-pill">
+            <div className="dot dot-green" />
+            <span className="wallet-addr">{truncate(account)}</span>
+          </div>
         ) : (
-          <button onClick={connect}>Connect MetaMask</button>
+          <button className="btn-connect" onClick={connect}>Connect Wallet</button>
         )}
+      </header>
+
+      {/* ── Stats Bar ── */}
+      <div className="stats-bar">
+        <div className="stat-tile">
+          <span className="stat-label">Contract Balance</span>
+          <span className="stat-value">{stats.balance}</span>
+        </div>
+        <div className="stat-tile">
+          <span className="stat-label">Total Policies</span>
+          <span className="stat-value">{stats.totalPolicies}</span>
+        </div>
+        <div className="stat-tile">
+          <span className="stat-label">Network</span>
+          <span className="stat-value">Sepolia</span>
+        </div>
       </div>
 
-      {/* Buy a policy */}
+      {/* ── Buy a Policy ── */}
       {account && (
         <div className="card">
-          <h2>Buy a Policy</h2>
-          <p className="muted">Premium: 0.001 ETH &nbsp;|&nbsp; Payout: 0.003 ETH &nbsp;|&nbsp; Trigger: delay ≥ 60 min</p>
-          <div className="row">
-            <div className="field">
-              <label>Flight Number (e.g. AA123)</label>
+          <div className="section-head">
+            <span className="section-title">Buy a Policy</span>
+          </div>
+          <p className="buy-meta">
+            Premium: 0.001 ETH&nbsp;&nbsp;·&nbsp;&nbsp;Payout: 0.003 ETH&nbsp;&nbsp;·&nbsp;&nbsp;Trigger: ≥60 min delay
+          </p>
+
+          <div className="form-row">
+            <div className="form-field">
+              <label className="field-label">Flight Number</label>
               <input
                 value={flightId}
                 onChange={e => setFlightId(e.target.value)}
@@ -204,8 +229,8 @@ function App() {
                 disabled={loading}
               />
             </div>
-            <div className="field">
-              <label>Travel Date</label>
+            <div className="form-field">
+              <label className="field-label">Travel Date</label>
               <input
                 type="date"
                 value={travelDate}
@@ -214,78 +239,106 @@ function App() {
               />
             </div>
           </div>
-          <button onClick={buyPolicy} disabled={loading}>
-            {loading ? "Processing..." : "Buy Policy (0.001 ETH)"}
+
+          <button className="btn-primary" onClick={buyPolicy} disabled={loading}>
+            {loading ? "Processing…" : "Buy Policy — 0.001 ETH"}
           </button>
-          <div className={`msg ${msg.startsWith("Error") ? "err" : ""}`}>{msg}</div>
+
+          {msg && (
+            <div className={`tx-msg${msg.startsWith("Error") ? " err" : ""}`}>{msg}</div>
+          )}
         </div>
       )}
 
-      {/* My policies */}
+      {/* ── My Policies ── */}
       {account && (
         <div className="card">
-          <h2>My Policies</h2>
-          {policies.length === 0 ? (
-            <div className="muted">No policies yet.</div>
-          ) : (
-            policies.map(p => (
-              <div className="policy-row" key={p.id}>
-                <div>
-                  <div><strong>#{p.id}</strong> &nbsp; {p.flightId}</div>
-                  <div className="muted">{new Date(Number(p.travelDate) * 1000).toLocaleDateString()}</div>
-                </div>
-                <span className={`status-badge status-${p.status}`}>
-                  {STATUS_LABELS[p.status]}
-                </span>
-              </div>
-            ))
-          )}
-          {policies.length > 0 && (
-            <button style={{ marginTop: "1rem", background: "#1e40af" }}
-              onClick={() => loadMyPolicies(contract, account)}>
-              Refresh
+          <div className="section-head">
+            <span className="section-title">My Policies</span>
+            <button className="btn-sm" onClick={() => loadMyPolicies(contract, account)}>
+              ↻ Refresh
             </button>
+          </div>
+
+          {policies.length === 0 ? (
+            <div className="empty-state">No policies found for this wallet.</div>
+          ) : (
+            <>
+              <div className="table-head">
+                <span className="th">ID</span>
+                <span className="th">Flight</span>
+                <span className="th">Travel Date</span>
+                <span className="th">Status</span>
+              </div>
+
+              {policies.map(p => {
+                const statusIdx = Number(p.status);
+                return (
+                  <div className="policy-row" key={p.id}>
+                    <span className="cell-id">#{p.id}</span>
+                    <span className="cell-flight">{p.flightId}</span>
+                    {/* Bug fix: Number(p.travelDate) * 1000 — contract stores unix seconds */}
+                    <span className="cell-date">{fmt(p.travelDate)}</span>
+                    <span className={`status-badge ${STATUS_CLASSES[statusIdx]}`}>
+                      {STATUS_LABELS[statusIdx]}
+                    </span>
+                  </div>
+                );
+              })}
+            </>
           )}
         </div>
       )}
 
-      {/* Event Log */}
+      {/* ── Event Log ── */}
       {account && (
         <div className="card">
-          <h2>Event Log</h2>
+          <div className="section-head">
+            <span className="section-title">
+              Event Log
+              <div className="dot-live" title="Live data" />
+            </span>
+            <button className="btn-sm" onClick={handleRefresh}>↻ Refresh</button>
+          </div>
+
           {eventsLoading ? (
-            <div className="muted">Loading events…</div>
+            <div className="empty-state">Loading events…</div>
           ) : eventLog.length === 0 ? (
-            <div className="muted">No on-chain events found.</div>
+            <div className="empty-state">No on-chain events found.</div>
           ) : (
-            <div className="event-log">
+            <div className="event-list">
               {eventLog.map((ev, i) => (
                 <div className="event-row" key={i}>
                   {ev.type === "purchased" ? (
-                    <>
-                      <span className="event-badge event-badge-blue">Purchased</span>
-                      <div className="event-details">
-                        <span>Policy <strong>#{ev.policyId}</strong> — {ev.flightId}</span>
-                        {ev.travelDate && (
-                          <span className="muted">
-                            Travel: {new Date(ev.travelDate * 1000).toLocaleDateString()}
-                          </span>
-                        )}
-                        <span className="muted address">{truncate(ev.holder)}</span>
-                      </div>
-                    </>
+                    <span className="event-badge eb-blue">Purchased</span>
                   ) : (
-                    <>
-                      <span className="event-badge event-badge-green">Payout</span>
-                      <div className="event-details">
-                        <span>Policy <strong>#{ev.policyId}</strong> — {ev.amount} ETH</span>
-                        <span className="muted">
-                          → <span className="address">{truncate(ev.holder)}</span>
-                        </span>
-                      </div>
-                    </>
+                    <span className="event-badge eb-green">Payout</span>
                   )}
-                  <span className="event-block muted">blk {ev.blockNumber}</span>
+
+                  <div className="event-info">
+                    {ev.type === "purchased" ? (
+                      <>
+                        <span className="event-main">
+                          Policy <strong>#{ev.policyId}</strong> — {ev.flightId}
+                        </span>
+                        <span className="event-sub">
+                          {/* Bug fix: ev.travelDate is already Number; still guard with Number() */}
+                          {ev.travelDate
+                            ? `${fmt(ev.travelDate)}  ·  ${truncate(ev.holder)}`
+                            : truncate(ev.holder)}
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        <span className="event-main">
+                          Policy <strong>#{ev.policyId}</strong> — {ev.amount} ETH paid out
+                        </span>
+                        <span className="event-sub">→ {truncate(ev.holder)}</span>
+                      </>
+                    )}
+                  </div>
+
+                  <span className="event-blk">blk {ev.blockNumber}</span>
                 </div>
               ))}
             </div>
@@ -293,16 +346,47 @@ function App() {
         </div>
       )}
 
-      {/* How it works */}
+      {/* ── How It Works ── */}
       <div className="card">
-        <h2>How it works</h2>
-        <ol style={{ paddingLeft: "1.2rem", lineHeight: "1.9" }}>
-          <li>Connect your MetaMask wallet (Sepolia testnet).</li>
-          <li>Enter your flight number and travel date, then pay 0.001 ETH.</li>
-          <li>After your flight lands, the oracle script checks the delay and calls the contract.</li>
-          <li>If the delay was 60+ minutes, 0.003 ETH is sent to your wallet automatically — no claim needed.</li>
-        </ol>
+        <div className="section-head" style={{ marginBottom: 28 }}>
+          <span className="section-title">How It Works</span>
+        </div>
+
+        <div className="steps-wrapper">
+          <div className="steps-line" aria-hidden="true" />
+          <div className="steps-track">
+            {[
+              {
+                n: "1",
+                label: "Connect",
+                desc: "Connect your MetaMask wallet on the Sepolia testnet.",
+              },
+              {
+                n: "2",
+                label: "Buy a Policy",
+                desc: "Enter your flight and travel date. Pay 0.001 ETH.",
+              },
+              {
+                n: "3",
+                label: "Oracle Reports",
+                desc: "After landing, the oracle checks the delay and reports it on-chain.",
+              },
+              {
+                n: "4",
+                label: "Auto Payout",
+                desc: "Delayed ≥60 min? 0.003 ETH lands in your wallet. No claim needed.",
+              },
+            ].map(s => (
+              <div className="step" key={s.n}>
+                <div className="step-num">{s.n}</div>
+                <div className="step-label">{s.label}</div>
+                <div className="step-desc">{s.desc}</div>
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
+
     </div>
   );
 }
