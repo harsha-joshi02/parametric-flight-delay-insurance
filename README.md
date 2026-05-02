@@ -56,7 +56,7 @@ Also paste the contract address in `frontend/src/contract.js`.
 
 ```bash
 npm test
-# 6 passing
+# 9 passing
 ```
 
 ---
@@ -105,3 +105,25 @@ Replace `<policyId>` with the policy number shown on the frontend. If delayed, 0
 - All policy data is public on-chain (no privacy).
 - Fixed premium/payout — no dynamic pricing.
 - Sepolia testnet only, no real money involved.
+
+---
+
+## Production Roadmap
+
+Each known limitation has a clear path to a production-ready solution.
+
+### Decentralized Oracle
+
+The current design trusts a single wallet address to report flight delays honestly. If that key is compromised, or the operator goes offline, payouts fail or can be falsified. In production, this would be replaced with **Chainlink Any API**: the oracle node fetches delay data from a flight-status provider (e.g. AviationStack), signs the response cryptographically, and submits it to an on-chain aggregator. The contract only accepts a result that carries a valid Chainlink signature, meaning no single party — including the contract owner — can fabricate or censor a delay report. The trust model shifts from "trust the operator" to "trust the cryptographic proof."
+
+### Privacy
+
+Every field in the current `Policy` struct — flight ID, travel date, policyholder wallet — is readable by anyone on-chain. This links a person's identity (their wallet) to their travel plans. A production system would use a **commitment scheme**: at purchase time the user submits `keccak256(flightId, salt)` instead of the raw flight ID. The actual flight ID and salt are kept off-chain by the user. At claim time (or when the oracle reports), the user reveals the preimage and the contract verifies it matches the stored hash before processing the payout. No flight data is publicly linkable to a wallet address until the moment of payout, and even then only the confirmed flight is revealed.
+
+### Dynamic Pricing
+
+A fixed 0.001 ETH premium is actuarially naive — a notoriously delay-prone route carries far more risk than a short domestic hop. A production system would calculate premiums using an on-chain actuarial model fed by Chainlink oracle data: historical delay rates per airline, route, season, and time of day would inform a per-policy risk score, and the premium would be set as a multiple of expected loss. This makes the insurance pool self-sustaining without requiring the owner to top it up manually.
+
+### Mainnet Readiness
+
+Before handling real funds, the contract would need a professional security audit from a firm specializing in smart contract security (e.g. Trail of Bits, OpenZeppelin, or Consensys Diligence). The audit should cover reentrancy edge cases, oracle manipulation vectors, integer overflow/underflow, access control completeness, and economic attack surfaces such as griefing or pool-draining. Deployment to mainnet without an audit with real user funds at stake would be irresponsible.

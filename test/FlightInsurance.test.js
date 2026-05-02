@@ -79,4 +79,50 @@ describe("FlightInsurance", function () {
     const p = await contract.getPolicy(0);
     expect(p.status).to.equal(3n); // Expired
   });
+
+  // --- New test cases ---
+
+  // Test A: reportDelay reverts when contract doesn't have enough ETH to cover PAYOUT_AMOUNT
+  it("reverts reportDelay when contract balance is insufficient for payout", async function () {
+    const Factory = await ethers.getContractFactory("FlightInsurance");
+    const unfunded = await Factory.deploy(oracle.address);
+    // Deliberately do NOT fund — balance is 0
+
+    // Derive a fresh future date from block.timestamp to be immune to evm_increaseTime side-effects
+    const block = await ethers.provider.getBlock("latest");
+    const testFutureDate = block.timestamp + 86400 * 7;
+
+    await unfunded.connect(user1).buyPolicy("BA456", testFutureDate, { value: PREMIUM });
+
+    await expect(
+      unfunded.connect(oracle).reportDelay(0, 90)
+    ).to.be.revertedWith("Insufficient contract balance");
+  });
+
+  // Test B: reportDelay can only be called by the designated oracle address
+  it("confirms that only the oracle can call reportDelay", async function () {
+    const block = await ethers.provider.getBlock("latest");
+    const testFutureDate = block.timestamp + 86400 * 7;
+
+    await contract.connect(user1).buyPolicy("DL789", testFutureDate, { value: PREMIUM });
+
+    // policyholder attempting to call reportDelay should revert
+    await expect(
+      contract.connect(user1).reportDelay(0, 90)
+    ).to.be.revertedWith("Not oracle");
+
+    // owner attempting to call reportDelay should also revert
+    await expect(
+      contract.connect(owner).reportDelay(0, 90)
+    ).to.be.revertedWith("Not oracle");
+  });
+
+  // Test C: buyPolicy reverts when travelDate is in the past
+  it("reverts buyPolicy when travel date is in the past", async function () {
+    const pastDate = Math.floor(Date.now() / 1000) - 86400; // yesterday
+
+    await expect(
+      contract.connect(user1).buyPolicy("UA999", pastDate, { value: PREMIUM })
+    ).to.be.revertedWith("Travel date must be in the future");
+  });
 });
